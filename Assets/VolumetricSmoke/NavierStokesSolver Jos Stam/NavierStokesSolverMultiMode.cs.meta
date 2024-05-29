@@ -1,0 +1,22 @@
+fileFormatVersion: 2
+guid: c3dabefc4ec36e144b140ad37624d444
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences:
+  - s_rt: {instanceID: 0}
+  - density_rt: {instanceID: 0}
+  - Vx_rt: {instanceID: 0}
+  - Vy_rt: {instanceID: 0}
+  - Vz_rt: {instanceID: 0}
+  - Vx0_rt: {instanceID: 0}
+  - Vy0_rt: {instanceID: 0}
+  - Vz0_rt: {instanceID: 0}
+  - boundries_rt: {instanceID: 0}
+  - solver: {fileID: 7200000, guid: 819302acfeb76ff438841c46ef4a8f48, type: 3}
+  - solver3D: {instanceID: 0}
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 

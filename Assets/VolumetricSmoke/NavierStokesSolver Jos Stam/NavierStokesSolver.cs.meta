@@ -1,0 +1,13 @@
+fileFormatVersion: 2
+guid: 26b69295a9767a942812a655c6ea328a
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences:
+  - solver: {fileID: 7200000, guid: 819302acfeb76ff438841c46ef4a8f48, type: 3}
+  - solver3D: {fileID: 7200000, guid: 6cf5623b837b4d64da9ef78461c52004, type: 3}
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 

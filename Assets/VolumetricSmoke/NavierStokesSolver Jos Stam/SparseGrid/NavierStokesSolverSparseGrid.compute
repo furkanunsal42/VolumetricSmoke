@@ -1,0 +1,333 @@
+
+// simulation kernels
+#pragma kernel set_bnd
+#pragma kernel lin_solve_gauss_seidel
+#pragma kernel lin_solve_jacobi
+#pragma kernel add_external_force
+#pragma kernel advect
+#pragma kernel project_1
+#pragma kernel project_2
+
+// utilities
+#pragma kernel write_to_texture
+#pragma kernel swap_textures
+#pragma kernel copy_textures
+#pragma kernel copy_buffers
+#pragma kernel copy_to_buffer
+#pragma kernel copy_to_texture
+
+int size_x;
+int size_y;
+int size_z;
+RWStructuredBuffer<float> density_1;
+RWStructuredBuffer<float> density_2;
+
+RWStructuredBuffer<float> velocity_x_1;
+RWStructuredBuffer<float> velocity_y_1;
+
+RWStructuredBuffer<float> velocity_x_2;
+RWStructuredBuffer<float> velocity_y_2;
+
+RWStructuredBuffer<float> boundries;
+
+int interleave_with_zero(int input)
+{
+    input = (input ^ (input << 8)) & 0x00ff00ff;
+    input = (input ^ (input << 4)) & 0x0f0f0f0f;
+    input = (input ^ (input << 2)) & 0x33333333;
+    input = (input ^ (input << 1)) & 0x55555555;
+    return input;
+}
+
+int interleave(int x, int y)
+{
+    return interleave_with_zero(x) | (interleave_with_zero(y) << 1);
+}
+
+// convert texture coordinates to 1d buffer coordinates
+int idx(int2 texcoord)
+{
+    return interleave(texcoord.x, texcoord.y);
+}
+
+//int2 idx_inverse(int index)
+//{
+//    int max_dimention = max(max(size_x, size_y), 0 /*size_z*/);
+//    int y = index >> max_dimention;
+//    int x = index - (y << max_dimention);
+//    return int2(x, y);
+//}
+
+float sample(RWStructuredBuffer<float> buffer, float2 texcoord)
+{
+    float x = texcoord.x;
+    float y = texcoord.y;
+    int ix = x;
+    int iy = x;
+    x -= ix;
+    y -= iy;
+    
+    float x00 = buffer[idx(int2(ix + 0, iy + 0))], x10 = buffer[idx(int2(ix + 1, iy + 0))];
+    float x01 = buffer[idx(int2(ix + 0, iy + 1))], x11 = buffer[idx(int2(ix + 1, iy + 1))];
+        
+    return lerp(lerp(x00, x10, x), lerp(x01, x11, x), y);
+}
+
+[numthreads(8, 8, 1)]
+void swap_textures(int3 id : SV_DispatchThreadID)
+{
+    if (id.x >= size_x || id.y >= size_y) return;
+    if (id.x < 0 || id.y < 0) return;
+    
+    velocity_x_1[idx(id.xy)] = velocity_x_2[idx(id.xy)];
+    velocity_y_1[idx(id.xy)] = velocity_y_2[idx(id.xy)];
+    density_1[idx(id.xy)] = density_2[idx(id.xy)];
+}
+
+RWStructuredBuffer<float> x0;
+float a;
+float c;
+
+Texture2D<float> copy_source_texture;
+RWTexture2D<float> copy_target_texture;
+
+[numthreads(8, 8, 1)]
+void copy_textures(int3 id : SV_DispatchThreadID)
+{
+    if (id.x >= size_x || id.y >= size_y) return;
+    if (id.x < 0 || id.y < 0) return;
+    
+    copy_target_texture[id.xy] = copy_source_texture[id.xy];
+}
+
+RWStructuredBuffer<float> copy_source_buffer;
+RWStructuredBuffer<float> copy_target_buffer;
+
+[numthreads(8, 8, 1)]
+void copy_buffers(int3 id : SV_DispatchThreadID)
+{
+    if (id.x >= size_x || id.y >= size_y)
+        return;
+    if (id.x < 0 || id.y < 0)
+        return;
+    
+    copy_target_buffer[idx(id.xy)] = copy_source_buffer[idx(id.xy)];
+}
+
+[numthreads(8, 8, 1)]
+void copy_to_buffer(int3 id : SV_DispatchThreadID)
+{
+    if (id.x >= size_x || id.y >= size_y) return;
+    if (id.x < 0 || id.y < 0) return;
+    
+    copy_target_buffer[id.x + id.y * size_x] = copy_source_texture[id.xy];
+}
+
+[numthreads(8, 8, 1)]
+void copy_to_texture(int3 id : SV_DispatchThreadID)
+{
+    if (id.x >= size_x || id.y >= size_y) return;
+    if (id.x < 0 || id.y < 0) return;
+    
+    copy_target_texture[id.xy] = copy_source_buffer[idx(id.xy)];
+}
+
+RWStructuredBuffer<float> d;
+float force;
+float dt;
+
+[numthreads(8, 8, 1)]
+void add_external_force(int3 id : SV_DispatchThreadID)       // args: float force_x, float force_y         | dt
+{
+    if (id.x >= size_x - 1 || id.x < 1) return;
+    if (id.y >= size_y - 1 || id.y < 1) return;
+    
+    d[idx(id.xy)] += force * dt;
+}
+
+float value;
+float2 write_position;
+RWStructuredBuffer<float> write_target;
+[numthreads(1, 1, 1)]
+void write_to_texture(uint3 id : SV_DispatchThreadID)
+{
+    write_target[idx(write_position)] = value;
+}
+
+int b;
+RWStructuredBuffer<float> x;
+
+[numthreads(8, 8, 1)]
+void set_bnd(int3 id : SV_DispatchThreadID)              // args: int b, float[] x     | boundries
+{
+    if (id.x >= size_x || id.y >= size_y) return;
+    if (id.x < 0 || id.y < 0) return;
+    
+    if (boundries[idx(id.xy)] > 0.5f)
+    {   
+        
+        int non_boundry_neigbour_count = 0;
+        
+        float fluid_sum = 0;
+        float boundry_sum = 0;
+        
+        if (boundries[idx(id.xy + int2(1, 0))] < 0.5f)
+        {
+            non_boundry_neigbour_count++;
+            fluid_sum += b == 1 ? -x[idx(id.xy + int2(1, 0))] : x[idx(id.xy + int2(1, 0))];
+        }
+        else boundry_sum = x[idx(id.xy + int2(1, 0))];
+        
+        if (boundries[idx(id.xy + int2(-1, 0))] < 0.5f)
+        {
+            non_boundry_neigbour_count++;
+            fluid_sum += b == 1 ? -x[idx(id.xy + int2(-1, 0))] : x[idx(id.xy + int2(-1, 0))];
+        }
+        else boundry_sum += x[idx(id.xy + int2(-1, 0))];
+        
+        if (boundries[idx(id.xy + uint2(0, 1))] < 0.5f)
+        {
+            non_boundry_neigbour_count++;
+            fluid_sum += b == 2 ? -x[idx(id.xy + int2(0, 1))] : x[idx(id.xy + int2(0, 1))];
+        }
+        else boundry_sum += x[idx(id.xy + int2(0, 1))];
+        
+        if (boundries[idx(id.xy + int2(0, -1))] < 0.5f)
+        {
+            non_boundry_neigbour_count++;
+            fluid_sum += b == 2 ? -x[idx(id.xy + int2(0, -1))] : x[idx(id.xy + int2(0, -1))];
+        }
+        else boundry_sum += x[idx(id.xy + int2(0, -1))];
+        
+        if (non_boundry_neigbour_count != 0)    x[idx(id.xy)] = fluid_sum / non_boundry_neigbour_count;
+        else                                    x[idx(id.xy)] = boundry_sum / (4 - non_boundry_neigbour_count);
+    }
+}
+
+RWStructuredBuffer<float> x_old;
+
+[numthreads(8, 8, 1)]
+void lin_solve_gauss_seidel(int3 id : SV_DispatchThreadID)  // args: int b, float[] x, float[] x0, float a, float c          x_old
+{
+    if (id.x >= size_x - 1 || id.y >= size_y - 1)
+        return;
+    if (id.x < 1 || id.y < 1)
+        return;
+ 
+    float cRecip = 1.0f / c;
+    
+    x[idx(id.xy)] =
+        (x0[idx(id.xy)]
+        + a * (x[idx(id.xy + int2(1, 0))]
+        + x[idx(id.xy + int2(-1, 0))]
+        + x[idx(id.xy + int2(0, 1))]
+        + x[idx(id.xy + int2(0, -1))]
+        )) * cRecip;
+}
+
+[numthreads(8, 8, 1)]
+void lin_solve_jacobi(int3 id : SV_DispatchThreadID)  // args: int b, float[] x, float[] x0, float a, float c          x_old
+{
+    if (id.x >= size_x - 1 || id.y >= size_y - 1)
+        return;
+    if (id.x < 1 || id.y < 1)
+        return;
+ 
+    float cRecip = 1.0f / c;
+    x[idx(id.xy)] =
+        (x0[idx(id.xy)]
+        + a * (x_old[idx(id.xy + int2(1, 0))]
+        + x_old[idx(id.xy + int2(-1, 0))]
+        + x_old[idx(id.xy + int2(0, 1))]
+        + x_old[idx(id.xy + int2(0, -1))]
+        )) * cRecip;
+}
+
+
+RWStructuredBuffer<float> div;
+RWStructuredBuffer<float> p;
+
+[numthreads(8, 8, 1)]
+void project_1(int3 id : SV_DispatchThreadID)        // args: float[] velocX, float[] velocY, float[] p, float[] div
+{
+    if (id.x >= size_x - 1 || id.y >= size_y - 1) return;
+    if (id.x < 1 || id.y < 1) return;
+    
+    div[idx(id.xy)] = -0.5f * (
+              velocity_x_1[idx(id.xy + int2(1, 0))]
+            - velocity_x_1[idx(id.xy + int2(-1, 0))]
+            + velocity_y_1[idx(id.xy + int2(0, 1))]
+            - velocity_y_1[idx(id.xy + int2(0, -1))]
+            ) / size_x;                                                       // potential size mismatch
+    p[idx(id.xy)] = 0;
+}
+
+
+[numthreads(8, 8, 1)]
+void project_2(int3 id : SV_DispatchThreadID)        // args: float[] velocX, float[] velocY, float[] p, float[] div
+{
+    if (id.x >= size_x - 1 || id.y >= size_y - 1) return;
+    if (id.x < 1 || id.y < 1) return;
+    
+    velocity_x_1[idx(id.xy)] -= 0.5f * (p[idx(id.xy + int2(1, 0))]
+            - p[idx(id.xy + int2(-1, 0))]) * size_x;                                 // potential size mismatch
+    velocity_y_1[idx(id.xy)] -= 0.5f * (p[idx(id.xy + int2(0, 1))]
+            - p[idx(id.xy + int2(0, -1))]) * size_y;                                 // potential size mismatch
+}
+
+
+RWStructuredBuffer<float> d0;
+
+[numthreads(8, 8, 1)]
+void advect(int3 id : SV_DispatchThreadID)           // args: int b, float[] d, float[] d0, float[] velocX, float[] velocY         | dt
+{
+    if (id.x >= size_x - 1 || id.y >= size_y - 1) return;
+    if (id.x < 1 || id.y < 1) return;
+    
+    float i0, i1, j0, j1;
+
+    float dtx = dt * (size_x - 2);
+    float dty = dt * (size_y - 2);
+
+    float s0, s1, t0, t1;
+    float tmp1, tmp2, x, y;
+
+    float ifloat, jfloat;
+
+    ifloat = id.x;
+    jfloat = id.y;
+    
+    tmp1 = dtx * velocity_x_1[idx(id.xy)];
+    tmp2 = dty * velocity_y_1[idx(id.xy)];
+
+    x = ifloat - tmp1;
+    y = jfloat - tmp2;
+
+    if (x < 0.5f)
+        x = 0.5f;
+    if (x > size_x + 0.5f)
+        x = size_x + 0.5f;
+    i0 = floor(x);
+    i1 = i0 + 1.0f;
+    if (y < 0.5f)
+        y = 0.5f;
+    if (y > size_y + 0.5f)
+        y = size_y + 0.5f;
+    j0 = floor(y);
+    j1 = j0 + 1.0f;
+
+    s1 = x - i0;
+    s0 = 1.0f - s1;
+    t1 = y - j0;
+    t0 = 1.0f - t1;
+
+    int i0i = (int) i0;
+    int i1i = (int) i1;
+    int j0i = (int) j0;
+    int j1i = (int) j1;
+
+
+    d[idx(id.xy)] =
+            s0 * (t0 * d0[idx(int2(i0i, j0i))] + t1 * d0[idx(int2(i0i, j1i))]) +
+            s1 * (t0 * d0[idx(int2(i1i, j0i))] + t1 * d0[idx(int2(i1i, j1i))]);
+}

@@ -1,0 +1,16 @@
+fileFormatVersion: 2
+guid: 58c27cb00147b064b9a03b5a8b01499f
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences:
+  - density1_rt: {instanceID: 0}
+  - density2_rt: {instanceID: 0}
+  - boundries_rt: {instanceID: 0}
+  - solver: {fileID: 7200000, guid: 2a5822aea61a73447aacb9de38baf82f, type: 3}
+  - solver3D: {fileID: 7200000, guid: 9c3052d027a046c4db2f1e6c05f23cd5, type: 3}
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 

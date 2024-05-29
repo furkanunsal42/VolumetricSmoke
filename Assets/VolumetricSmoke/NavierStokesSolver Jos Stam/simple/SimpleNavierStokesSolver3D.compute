@@ -1,0 +1,364 @@
+
+// simulation kernels
+#pragma kernel set_bnd_3d
+#pragma kernel lin_solve_gauss_seidel_3d
+#pragma kernel lin_solve_jacobi_3d
+#pragma kernel add_external_force_3d
+#pragma kernel advect_3d
+#pragma kernel project_1_3d
+#pragma kernel project_2_3d
+
+// utilities
+#pragma kernel write_to_texture_3d
+#pragma kernel swap_textures_3d
+#pragma kernel copy_textures_3d
+#pragma kernel copy_to_buffer_3d
+#pragma kernel copy_to_texture_3d
+#pragma kernel get_3d_texture_slice
+
+#define kernel_size_x 2
+#define kernel_size_y 2
+#define kernel_size_z 2
+#define kernel_size 2, 2, 2
+
+int size_x;
+int size_y;
+int size_z;
+RWTexture3D<float> density_1;
+RWTexture3D<float> density_2;
+
+RWTexture3D<float> velocity_x_1;
+RWTexture3D<float> velocity_y_1;
+RWTexture3D<float> velocity_z_1;
+
+RWTexture3D<float> velocity_x_2;
+RWTexture3D<float> velocity_y_2;
+RWTexture3D<float> velocity_z_2;
+
+RWTexture3D<float> boundries;
+
+[numthreads(kernel_size)]
+void swap_textures_3d(int3 id : SV_DispatchThreadID)
+{
+    if (id.x >= size_x || id.y >= size_y || id.z >= size_z) return;
+    if (id.x < 0 || id.y < 0 || id.z < 0) return;
+    
+    velocity_x_1[id.xyz] = velocity_x_2[id.xyz];
+    velocity_y_1[id.xyz] = velocity_y_2[id.xyz];
+    velocity_z_1[id.xyz] = velocity_z_2[id.xyz];
+    density_1[id.xyz] = density_2[id.xyz];
+}
+
+RWTexture3D<float> x0;
+float a;
+float c;
+
+Texture3D<float> copy_source_texture;
+RWTexture3D<float> copy_target_texture;
+
+[numthreads(kernel_size)]
+void copy_textures_3d(int3 id : SV_DispatchThreadID)
+{
+    if (id.x >= size_x || id.y >= size_y || id.z >= size_z) return;
+    if (id.x < 0 || id.y < 0 || id.z < 0) return;
+    
+    copy_target_texture[id.xyz] = copy_source_texture[id.xyz];
+}
+
+RWStructuredBuffer<float> copy_target_buffer;
+
+[numthreads(kernel_size)]
+void copy_to_buffer_3d(int3 id : SV_DispatchThreadID)
+{
+    if (id.x >= size_x || id.y >= size_y || id.z >= size_z) return;
+    if (id.x < 0 || id.y < 0 || id.z < 0) return;
+    
+    copy_target_buffer[id.x + id.y * size_x + id.z * size_x * size_y] = copy_source_texture[id.xyz];
+}
+
+RWStructuredBuffer<float> copy_source_buffer;
+
+[numthreads(kernel_size)]
+void copy_to_texture_3d(int3 id : SV_DispatchThreadID)
+{
+    if (id.x >= size_x || id.y >= size_y || id.z >= size_z) return;
+    if (id.x < 0 || id.y < 0 || id.z < 0) return;
+    
+    copy_target_texture[id.xyz] = copy_source_buffer[id.x + id.y * size_x + id.z * size_x * size_y];
+}
+
+int slice_z_index;
+RWTexture2D<float> slice_target;
+[numthreads(kernel_size_x, kernel_size_y, 1)]
+void get_3d_texture_slice(int3 id : SV_DispatchThreadID)
+{
+    slice_target[id.xy] = copy_source_texture[int3(id.xy, slice_z_index)];
+}
+
+RWTexture3D<float> d;
+float force;
+float dt;
+
+[numthreads(kernel_size)]
+void add_external_force_3d(int3 id : SV_DispatchThreadID)       // args: float force_x, float force_y         | dt
+{
+    if (id.x >= size_x - 1 || id.x < 1) return;
+    if (id.y >= size_y - 1 || id.y < 1) return;
+    if (id.z >= size_z - 1 || id.z < 1) return;
+    
+    d[id.xyz] += force * dt;
+}
+
+float value;
+float3 write_position;
+RWTexture3D<float> write_target;
+
+[numthreads(1, 1, 1)]
+void write_to_texture_3d(int3 id : SV_DispatchThreadID)
+{
+    if (write_position.x >= size_x || write_position.y >= size_y || write_position.z >= size_z) return;
+    if (write_position.x < 0|| write_position.y < 0|| write_position.z < 0) return;
+    
+    write_target[int3(write_position)] = value;
+}
+
+int b;
+RWTexture3D<float> x;
+
+[numthreads(kernel_size)]
+void set_bnd_3d(int3 id : SV_DispatchThreadID)              // args: int b, float[] x     | boundries
+{
+    if (id.x >= size_x || id.y >= size_y || id.z >= size_z) return;
+    if (id.x < 0 || id.y < 0 || id.z < 0) return;
+    
+    if (boundries[id.xyz] > 0.5f)
+    {   
+        if (b == 0)
+        {
+            x[id.xyz] = 0;
+            return;
+        }
+        
+        int non_boundry_neigbour_count = 0;
+        
+        float fluid_sum = 0;
+        float boundry_sum = 0;
+        
+        if (boundries[id.xyz + int3(1, 0, 0)] < 0.5f)
+        {
+            non_boundry_neigbour_count++;
+            fluid_sum += b == 1 ? -x[id.xyz + int3(1, 0, 0)] : x[id.xyz + int3(1, 0, 0)];
+        }
+        else boundry_sum = x[id.xyz + int3(1, 0, 0)];
+        
+        if (boundries[id.xyz + int3(-1, 0, 0)] < 0.5f)
+        {
+            non_boundry_neigbour_count++;
+            fluid_sum += b == 1 ? -x[id.xyz + int3(-1, 0, 0)] : x[id.xyz + int3(-1, 0, 0)];
+        }
+        else boundry_sum += x[id.xyz + int3(-1, 0, 0)];
+        
+        if (boundries[id.xyz + int3(0, 1, 0)] < 0.5f)
+        {
+            non_boundry_neigbour_count++;
+            fluid_sum += b == 2 ? -x[id.xyz + int3(0, 1, 0)] : x[id.xyz + int3(0, 1, 0)];
+        }
+        else boundry_sum += x[id.xyz + int3(0, 1, 0)];
+        
+        if (boundries[id.xyz + int3(0, -1, 0)] < 0.5f)
+        {
+            non_boundry_neigbour_count++;
+            fluid_sum += b == 2 ? -x[id.xyz + int3(0, -1, 0)] : x[id.xyz + int3(0, -1, 0)];
+        }
+        else boundry_sum += x[id.xyz + int3(0, -1, 0)];
+        
+        if (boundries[id.xyz + int3(0, 0, 1)] < 0.5f)
+        {
+            non_boundry_neigbour_count++;
+            fluid_sum += b == 3 ? -x[id.xyz + int3(0, 0, 1)] : x[id.xyz + int3(0, 0, 1)];
+        }
+        else
+            boundry_sum += x[id.xyz + int3(0, 0, 1)];
+        
+        if (boundries[id.xyz + int3(0, 0, -1)] < 0.5f)
+        {
+            non_boundry_neigbour_count++;
+            fluid_sum += b == 3 ? -x[id.xyz + int3(0, 0, -1)] : x[id.xyz + int3(0, 0, -1)];
+        }
+        else
+            boundry_sum += x[id.xyz + int3(0, 0, -1)];
+        
+        if (non_boundry_neigbour_count != 0)
+            x[id.xyz] = fluid_sum / non_boundry_neigbour_count;
+        else
+            x[id.xyz] = boundry_sum / (6 - non_boundry_neigbour_count);
+        }
+    
+    //if (id.y == 0)
+    //{
+    //    x[id.xy] = b == 2 ? -x[id.xy + int2(0, 1)] : x[id.xy + int2(0, 1)];
+    //}
+    //if (id.y == size - 1)
+    //{
+    //    x[id.xy] = b == 2 ? -x[id.xy + int2(0, -1)] : x[id.xy + int2(0, -1)];
+    //}
+    //if (id.x == 0)
+    //{
+    //    x[id.xy] = b == 1 ? -x[id.xy + int2(1, 0)] : x[id.xy + int2(1, 0)];
+    //}
+    //if (id.x == size - 1)
+    //{
+    //    x[id.xy] = b == 1 ? -x[id.xy + int2(-1, 0)] : x[id.xy + int2(-1, 0)];
+    //}
+}
+
+RWTexture3D<float> x_old;
+
+[numthreads(kernel_size)]
+void lin_solve_gauss_seidel_3d(int3 id : SV_DispatchThreadID)  // args: int b, float[] x, float[] x0, float a, float c          x_old
+{
+    if (id.x >= size_x - 1 || id.y >= size_y - 1 || id.z >= size_z - 1) return;
+    if (id.x < 1 || id.y < 1 || id.z < 1) return;
+    
+    float cRecip = 1.0f / c;
+    x[id.xyz] =
+    (x0[id.xyz]
+    + a * (
+        x[id.xyz + int3(1, 0, 0)]
+    + x[id.xyz + int3(-1, 0, 0)]
+    + x[id.xyz + int3(0, 1, 0)]
+    + x[id.xyz + int3(0, -1, 0)]
+    + x[id.xyz + int3(0, 0, 1)]
+    + x[id.xyz + int3(0, 0, -1)]
+    )) * cRecip;
+}
+
+[numthreads(kernel_size)]
+void lin_solve_jacobi_3d(int3 id : SV_DispatchThreadID)  // args: int b, float[] x, float[] x0, float a, float c          x_old
+{
+    if (id.x >= size_x - 1 || id.y >= size_y - 1 || id.z >= size_z - 1) return;
+    if (id.x < 1 || id.y < 1 || id.z < 1) return;
+ 
+    float cRecip = 1.0f / c;
+    x[id.xyz] =
+        (x0[id.xyz]
+        + a * (
+          x_old[id.xyz + int3( 1,  0,  0)]
+        + x_old[id.xyz + int3(-1,  0,  0)]
+        + x_old[id.xyz + int3( 0,  1,  0)]
+        + x_old[id.xyz + int3( 0, -1,  0)]
+        + x_old[id.xyz + int3( 0,  0,  1)]
+        + x_old[id.xyz + int3( 0,  0, -1)]
+        )) * cRecip;
+}
+
+
+RWTexture3D<float> div;
+RWTexture3D<float> p;
+
+[numthreads(kernel_size)]
+void project_1_3d(int3 id : SV_DispatchThreadID)        // args: float[] velocX, float[] velocY, float[] p, float[] div
+{
+    if (id.x >= size_x - 1 || id.y >= size_y - 1 || id.z >= size_z - 1) return;
+    if (id.x < 1 || id.y < 1 || id.z < 1) return;
+    
+    div[id.xyz] = -0.5f * (
+              velocity_x_1[id.xyz + int3( 1,  0,  0)]
+            - velocity_x_1[id.xyz + int3(-1,  0,  0)]
+            + velocity_y_1[id.xyz + int3( 0,  1,  0)]
+            - velocity_y_1[id.xyz + int3( 0, -1,  0)]
+            + velocity_z_1[id.xyz + int3( 0,  0,  1)]
+            - velocity_z_1[id.xyz + int3( 0,  0, -1)]
+            ) / size_x;                                             // potational size mismatch
+    p[id.xyz] = 0;
+}
+
+[numthreads(kernel_size)]
+void project_2_3d(int3 id : SV_DispatchThreadID)        // args: float[] velocX, float[] velocY, float[] p, float[] div
+{
+    if (id.x >= size_x - 1 || id.y >= size_y - 1 || id.z >= size_z - 1) return;
+    if (id.x < 1 || id.y < 1 || id.z < 1) return;
+    
+    velocity_x_1[id.xyz] -= 0.5f * (p[id.xyz + int3(1, 0, 0)]
+            - p[id.xyz + int3(-1,  0,  0)]) * size_x;               // potational size mismatch
+    velocity_y_1[id.xyz] -= 0.5f * (p[id.xyz + int3(0, 1, 0)]
+            - p[id.xyz + int3( 0, -1,  0)]) * size_y;               // potational size mismatch
+    velocity_z_1[id.xyz] -= 0.5f * (p[id.xyz + int3(0, 0, 1)]
+            - p[id.xyz + int3( 0,  0, -1)]) * size_z;               // potational size mismatch
+    
+}
+
+RWTexture3D<float> d0;
+
+[numthreads(kernel_size)]
+void advect_3d(int3 id : SV_DispatchThreadID)           // args: int b, float[] d, float[] d0, float[] velocX, float[] velocY         | dt
+{
+    if (id.x >= size_x - 1 || id.y >= size_y - 1 || id.z >= size_z - 1) return;
+    if (id.x < 1 || id.y < 1 || id.z < 1) return;
+    
+    float i0, i1, j0, j1, k0, k1;
+
+    float dtx = dt * (size_x - 2);
+    float dty = dt * (size_y - 2);
+    float dtz = dt * (size_z - 2);
+    
+    float s0, s1, t0, t1, u0, u1;
+    float tmp1, tmp2, tmp3, x, y, z;
+
+    float ifloat, jfloat, kfloat;
+
+    ifloat = id.x;
+    jfloat = id.y;
+    kfloat = id.z;
+    
+    tmp1 = dtx * velocity_x_1[id.xyz];
+    tmp2 = dty * velocity_y_1[id.xyz];
+    tmp3 = dtz * velocity_z_1[id.xyz];
+    
+    x = ifloat - tmp1;
+    y = jfloat - tmp2;
+    z = kfloat - tmp3;
+
+    if (x < 0.5f)
+        x = 0.5f;
+    if (x > size_x + 0.5f)
+        x = size_x + 0.5f;
+    i0 = floor(x);
+    i1 = i0 + 1.0f;
+    if (y < 0.5f)
+        y = 0.5f;
+    if (y > size_y + 0.5f)
+        y = size_y + 0.5f;
+    j0 = floor(y);
+    j1 = j0 + 1.0f;
+    if (z < 0.5f)
+        z = 0.5f;
+    if (z > size_z + 0.5f)
+        z = size_z + 0.5f;
+    k0 = floor(z);
+    k1 = k0 + 1.0f;
+                
+    s1 = x - i0;
+    s0 = 1.0f - s1;
+    t1 = y - j0;
+    t0 = 1.0f - t1;
+    u1 = z - k0;
+    u0 = 1.0f - u1;
+                
+    int i0i = i0;
+    int i1i = i1;
+    int j0i = j0;
+    int j1i = j1;
+    int k0i = k0;
+    int k1i = k1;
+
+    d[id.xyz] =
+    s0 * (t0 * (u0 * d0[int3(i0i, j0i, k0i)]
+    + u1 * d0[int3(i0i, j0i, k1i)])
+    + (t1 * (u0 * d0[int3(i0i, j1i, k0i)]
+    + u1 * d0[int3(i0i, j1i, k1i)])))
+    + s1 * (t0 * (u0 * d0[int3(i1i, j0i, k0i)]
+    + u1 * d0[int3(i1i, j0i, k1i)])
+    + (t1 * (u0 * d0[int3(i1i, j1i, k0i)]
+    + u1 * d0[int3(i1i, j1i, k1i)])));
+}

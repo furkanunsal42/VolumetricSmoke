@@ -1,0 +1,251 @@
+#pragma kernel add_worley_noise_2D
+#pragma kernel add_worley_noise_3D
+#pragma kernel get_slice_of_3D_texture
+#pragma kernel clear_texture_2D
+#pragma kernel clear_texture_3D
+#pragma kernel compute_light_intensities
+#pragma kernel unite_textures
+
+// rendering data
+
+int noise_texture_size_x;
+int noise_texture_size_y;
+
+int cell_size_x;
+int cell_size_y;
+
+StructuredBuffer<float2> feature_points_buffer_2D;
+RWTexture2D<float> noise_texture_2D;
+
+float noise_strength;
+
+[numthreads(8, 8, 1)]
+void clear_texture_2D(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= noise_texture_size_x || id.y >= noise_texture_size_y)
+        return;
+    noise_texture_2D[id.xy] = 0;
+}
+
+[numthreads(8, 8, 1)]
+void add_worley_noise_2D(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= noise_texture_size_x || id.y >= noise_texture_size_y)
+        return;
+    
+    int cell_count_x = noise_texture_size_x / cell_size_x;
+    int cell_count_y = noise_texture_size_y / cell_size_y;
+    
+    float2 texture_coordinates = float2(id.x, id.y);
+    int2 cell_coordinates = floor(texture_coordinates / int2(cell_size_x, cell_size_y));
+    float2 local_coordinates = float2(texture_coordinates / int2(cell_size_x, cell_size_y) - cell_coordinates);
+
+    float min_distance = 1.0;
+    
+    for (int offset_y = -1; offset_y <= 1; offset_y++){
+        for (int offset_x = -1; offset_x <= 1; offset_x++){
+            
+            int2 offset = int2(offset_x, offset_y);
+            int2 neighbour_cell_coordinates = cell_coordinates + offset;
+        
+            int2 wrapped_cell_coordinates = fmod(neighbour_cell_coordinates + int2(cell_count_x, cell_count_y), int2(cell_count_x, cell_count_y));
+            int cellIndex = wrapped_cell_coordinates.x + wrapped_cell_coordinates.y * cell_count_x;
+            float2 featurePointOffset = neighbour_cell_coordinates + feature_points_buffer_2D[cellIndex];
+            min_distance = min(min_distance, distance(cell_coordinates + local_coordinates, featurePointOffset));
+        }
+    }
+    
+    noise_texture_2D[id.xy] += (1.0 - min_distance) * noise_strength;
+}
+
+int noise_texture_size_z;
+int cell_size_z;
+StructuredBuffer<float3> feature_points_buffer_3D;
+RWTexture3D<float> noise_texture_3D;
+
+[numthreads(8, 8, 8)]
+void clear_texture_3D(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= noise_texture_size_x || id.y >= noise_texture_size_y || id.z >= noise_texture_size_z)
+        return;
+    noise_texture_3D[id.xyz] = 0;
+}
+
+[numthreads(8, 8, 8)]
+void add_worley_noise_3D(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= noise_texture_size_x || id.y >= noise_texture_size_y || id.z >= noise_texture_size_z)
+        return;
+    
+    int cell_count_x = noise_texture_size_x / cell_size_x;
+    int cell_count_y = noise_texture_size_y / cell_size_y;
+    int cell_count_z = noise_texture_size_z / cell_size_z;
+    
+    float3 texture_coordinates = float3(id.x, id.y, id.z);
+    int3 cell_coordinates = floor(texture_coordinates / int3(cell_size_x, cell_size_y, cell_size_z));
+    float3 local_coordinates = float3(texture_coordinates / int3(cell_size_x, cell_size_y, cell_size_z) - cell_coordinates);
+    
+    float min_distance = 1.0;
+    
+    for (int offset_z = -1; offset_z <= 1; offset_z++){
+        for (int offset_y = -1; offset_y <= 1; offset_y++){
+            for (int offset_x = -1; offset_x <= 1; offset_x++){
+            
+                int3 offset = int3(offset_x, offset_y, offset_z);
+                int3 neighbour_cell_coordinates = cell_coordinates + offset;
+        
+                int3 wrapped_cell_coordinates = fmod(neighbour_cell_coordinates + int3(cell_count_x, cell_count_y, cell_count_z), int3(cell_count_x, cell_count_y, cell_count_z));
+                int cellIndex = wrapped_cell_coordinates.x + cell_count_x * (wrapped_cell_coordinates.y +  cell_count_y * wrapped_cell_coordinates.z);
+                float3 featurePointOffset = neighbour_cell_coordinates + feature_points_buffer_3D[cellIndex];
+                min_distance = min(min_distance, distance(cell_coordinates + local_coordinates, featurePointOffset) * 1);
+            }
+        }
+    }
+    
+    noise_texture_3D[id.xyz] += (1.0 - min_distance) * noise_strength;
+}
+
+RWTexture2D<float> slice_texture;
+int slice_index;
+
+[numthreads(8, 8, 1)]
+void get_slice_of_3D_texture(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= noise_texture_size_x || id.y >= noise_texture_size_y || id.z >= noise_texture_size_z)
+        return;
+    
+    slice_texture[id.xy] = noise_texture_3D[int3(id.xy, slice_index)];
+}
+
+// lighting
+
+RWTexture3D<float> light_density_texture;
+float3 light_texture_dims;
+
+float light_decay;
+float3 global_light_direction;
+float3 global_light_color;
+float god_rays_intensity;
+float step_size;
+float density_threashold;
+
+float3 light_id_to_noise_id(float3 light_id)
+{
+    return light_id / light_texture_dims * float3(noise_texture_size_x, noise_texture_size_y, noise_texture_size_z);
+}
+
+RWTexture3D<float> mask_texture_3D;
+float3 mask_texture_dims;
+
+float3 light_id_to_mask_id(float3 light_id)
+{
+    return light_id / light_texture_dims * mask_texture_dims;
+}
+
+
+[numthreads(8, 8, 8)]
+void compute_light_intensities(uint3 id : SV_DispatchThreadID)
+{
+    float3 current_coordinates = id;
+    bool is_frag_out_boundries = current_coordinates.x >= light_texture_dims.x || current_coordinates.y >= light_texture_dims.y || current_coordinates.z >= light_texture_dims.z || current_coordinates.x < 0 || current_coordinates.y < 0 || current_coordinates.z < 0;
+    
+    float3 light_direction = normalize(global_light_direction);
+    
+    float density = 0.0f;
+    float density_so_far = 0.0f;
+    float light_intensity = 1.0f;
+    
+    if (is_frag_out_boundries) return; // early return if frag doesn't start in boundries
+    
+    float scaled_step_size = light_texture_dims.x * step_size;
+    
+    int max_iteration = 256;
+    
+    [loop]
+    while (!is_frag_out_boundries && max_iteration-- >= 0)
+    {
+        density = noise_texture_3D[light_id_to_noise_id(current_coordinates)];
+        float mask = mask_texture_3D[light_id_to_mask_id(current_coordinates)];
+        
+        density = min(1, mask - abs(density_threashold)) * (density);
+        
+        density_so_far += density;
+        
+        if (density < density_threashold && density_so_far < 0.5)
+            density = god_rays_intensity;
+        else if (density < density_threashold)
+            density = 0.0f;
+        
+        
+        light_intensity *= exp(-density * light_decay * step_size);
+        
+        current_coordinates += -light_direction * scaled_step_size;
+        is_frag_out_boundries = current_coordinates.x >= light_texture_dims.x || current_coordinates.y >= light_texture_dims.y || current_coordinates.z >= light_texture_dims.z || current_coordinates.x < 0 || current_coordinates.y < 0 || current_coordinates.z < 0;
+    }
+       
+    light_density_texture[id] = light_intensity;
+
+}
+
+RWTexture3D<float4> united_texture;
+
+Texture3D<float> noise_texture_merge;
+Texture3D<float> detail_texture_merge;
+Texture3D<float> light_texture_merge;
+Texture3D<float> mask_texture_merge;
+
+SamplerState sampler_linear_clamp;
+
+int united_texture_size;
+int noise_texture_size;
+int detail_texture_size;
+int light_texture_size;
+int mask_texture_size;
+
+//float bilinear_filtering_3D(RWTexture3D<float> texture, float3 uvw, int texture_dim)
+//{
+//    //            0    u     1
+//    //            <---------->
+//    //             G_________H  ^ 0
+//    //            /|        /|  |
+//    //         C /_|______D/ |  | v
+//    //          |  | *(uv)|  |  |
+//    //     1 ^  |  |______|__|  v 1
+//    //    w /   | / E     | / F 
+//    //     /    |/________|/    
+//    //  0 V     A         B  
+//               
+//    float3 uvw_pixels = uvw * texture_dim;
+//    float4 uv_min_max_front = float4(floor(uvw_pixels.xy), ceil(uvw_pixels.xy));
+//    float4 uv_min_max_back  = float4(floor(uvw_pixels.xy), ceil(uvw_pixels.xy));
+//    
+//    
+//    float2 uv_frac = frac(uv_pixels);
+//    
+//    
+//    float texelA = texture[uv_min_max.xy];
+//    float texelB = texture[uv_min_max.xw];
+//    float texelC = texture[uv_min_max.zy];
+//    float texelD = texture[uv_min_max.zw];
+//    
+//    float bilinear = lerp(lerp(texelA, texelB, uv_frac.y), lerp(texelC, texelD, uv_frac.y), uv_frac.x);
+//}
+
+[numthreads(8, 8, 8)]
+void unite_textures(int3 id : SV_DispatchThreadID)
+{
+    float x = noise_texture_merge.SampleLevel(sampler_linear_clamp, (float3) id.xyz / united_texture_size, 0).r;
+    float y = detail_texture_merge.SampleLevel(sampler_linear_clamp, (float3) id.xyz / united_texture_size, 0).r;
+    float z = light_texture_merge.SampleLevel(sampler_linear_clamp, (float3) id.xyz / united_texture_size, 0).r;
+    float w = mask_texture_merge.SampleLevel(sampler_linear_clamp, (float3) id.xyz / united_texture_size, 0).r / 32.0f;
+    
+    united_texture[id.xyz] = float4(x, y, z, w);
+}
+/*
+    united_texture[id.xyz] = float4(
+        noise_texture_merge [id.xyz * noise_texture_size    / float(united_texture_size)],
+        detail_texture_merge[id.xyz * detail_texture_size   / float(united_texture_size)],
+        light_texture_merge [id.xyz * light_texture_size    / float(united_texture_size)],
+        mask_texture_merge  [id.xyz * mask_texture_size     / float(united_texture_size)] / 32.0f
+    );
+*/

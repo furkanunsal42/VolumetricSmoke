@@ -1,0 +1,160 @@
+#pragma kernel physics_step
+
+// utilities
+#pragma kernel write_to_texture_3d
+#pragma kernel swap_textures_3d
+#pragma kernel copy_textures_3d
+#pragma kernel copy_to_buffer_3d
+#pragma kernel copy_to_texture_3d
+#pragma kernel get_3d_texture_slice
+
+#define kernel_size_x 2
+#define kernel_size_y 2
+#define kernel_size_z 2
+#define kernel_size 2, 2, 2
+
+int size_x;
+int size_y;
+int size_z;
+
+RWTexture3D<float> density_1;
+RWTexture3D<float> density_2;
+
+[numthreads(kernel_size)]
+void swap_textures_3d(int3 id : SV_DispatchThreadID)
+{
+    if (id.x >= size_x || id.y >= size_y || id.z >= size_z) return;
+    if (id.x < 0 || id.y < 0 || id.z < 0) return;
+    
+    density_1[id.xyz] = density_2[id.xyz];
+}
+
+Texture3D<float> copy_source_texture;
+RWTexture3D<float> copy_target_texture;
+
+[numthreads(kernel_size)]
+void copy_textures_3d(int3 id : SV_DispatchThreadID)
+{
+    if (id.x >= size_x || id.y >= size_y || id.z >= size_z) return;
+    if (id.x < 0 || id.y < 0 || id.z < 0) return;
+    
+    copy_target_texture[id.xyz] = copy_source_texture[id.xyz];
+}
+
+RWStructuredBuffer<float> copy_target_buffer;
+
+[numthreads(kernel_size)]
+void copy_to_buffer_3d(int3 id : SV_DispatchThreadID)
+{
+    if (id.x >= size_x || id.y >= size_y || id.z >= size_z) return;
+    if (id.x < 0 || id.y < 0 || id.z < 0) return;
+    
+    copy_target_buffer[id.x + id.y * size_x + id.z * size_x * size_y] = copy_source_texture[id.xyz];
+}
+
+RWStructuredBuffer<float> copy_source_buffer;
+
+[numthreads(kernel_size)]
+void copy_to_texture_3d(int3 id : SV_DispatchThreadID)
+{
+    if (id.x >= size_x || id.y >= size_y || id.z >= size_z) return;
+    if (id.x < 0 || id.y < 0 || id.z < 0) return;
+    
+    copy_target_texture[id.xyz] = copy_source_buffer[id.x + id.y * size_x + id.z * size_x * size_y];
+}
+
+int slice_z_index;
+RWTexture2D<float> slice_target;
+[numthreads(kernel_size_x, kernel_size_y, 1)]
+void get_3d_texture_slice(int3 id : SV_DispatchThreadID)
+{
+    slice_target[id.xy] = copy_source_texture[int3(id.xy, slice_z_index)];
+}
+
+float value;
+float3 write_position;
+RWTexture3D<float> write_target;
+
+[numthreads(1, 1, 1)]
+void write_to_texture_3d(int3 id : SV_DispatchThreadID)
+{
+    if (write_position.x >= size_x || write_position.y >= size_y || write_position.z >= size_z) return;
+    if (write_position.x < 0|| write_position.y < 0|| write_position.z < 0) return;
+    
+    write_target[int3(write_position)] = value;
+}
+
+RWTexture3D<float> boundries;
+float dt;
+
+[numthreads(kernel_size)]
+void physics_step(int3 id : SV_DispatchThreadID)
+{
+    if (write_position.x >= size_x || write_position.y >= size_y || write_position.z >= size_z) return;
+    if (write_position.x < 0|| write_position.y < 0|| write_position.z < 0) return;
+    
+    float flow_speed = 100.0f;
+    float density_threshold = 0.1f;
+    float density_max = 10.0f;
+    
+    float self_density      = density_1[id.xyz];
+    if (self_density < density_threshold) return;
+    
+    float right_density     = density_1[id.xyz + int3( 1, 0, 0)];
+    float left_density      = density_1[id.xyz + int3(-1, 0, 0)];
+    float forward_density   = density_1[id.xyz + int3( 0, 0, 1)];
+    float back_density      = density_1[id.xyz + int3( 0, 0,-1)];
+    float top_density       = density_1[id.xyz + int3( 0, 1, 0)];
+    float bottom_density    = density_1[id.xyz + int3( 0,-1, 0)];
+    
+    bool right_boundry     = boundries[id.xyz + int3( 1, 0, 0)] != 0;
+    bool left_boundry      = boundries[id.xyz + int3(-1, 0, 0)] != 0;
+    bool forward_boundry   = boundries[id.xyz + int3( 0, 0, 1)] != 0;
+    bool back_boundry      = boundries[id.xyz + int3( 0, 0,-1)] != 0;
+    bool top_boundry       = boundries[id.xyz + int3( 0, 1, 0)] != 0;
+    bool bottom_boundry    = boundries[id.xyz + int3( 0,-1, 0)] != 0;
+    
+    if (top_density < density_max && !top_boundry)
+    {
+        float flow = max(0, min(self_density, dt * flow_speed));
+        density_2[id.xyz + int3(0, 1, 0)] += flow;
+        density_2[id.xyz] -= flow;
+        return;
+    }
+    
+    int free_neighbour_count = 0;
+        
+    bool left_free = !left_boundry && left_density < density_max;
+    bool right_free = !right_boundry && right_density < density_max;
+    bool forward_free = !forward_boundry && forward_density < density_max;
+    bool back_free = !back_boundry && back_density < density_max;
+        
+    free_neighbour_count += left_free ? 1 : 0;
+    free_neighbour_count += right_free ? 1 : 0;
+    free_neighbour_count += forward_free ? 1 : 0;
+    free_neighbour_count += back_free ? 1 : 0;
+    
+    if (free_neighbour_count > 0)
+    {
+        float total_flow = max(0, min(self_density, dt * flow_speed));
+        float flow = total_flow / free_neighbour_count;
+        
+        density_2[id.xyz] -= total_flow;
+        
+        if (left_free )     density_2[id.xyz + int3( 1, 0, 0)] += flow;
+        if (right_free )    density_2[id.xyz + int3(-1, 0, 0)] += flow;
+        if (forward_free )  density_2[id.xyz + int3( 0, 0, 1)] += flow;
+        if (back_free )     density_2[id.xyz + int3( 0, 0,-1)] += flow;
+        return;
+    }
+
+    if (!bottom_boundry && bottom_density < density_max)
+    {
+        float flow = max(0, min(self_density, dt * flow_speed));
+        density_2[id.xyz + int3(0,-1, 0)] += flow;
+        density_2[id.xyz] -= flow;
+        return;
+    }
+ 
+    return;
+}

@@ -1,0 +1,19 @@
+fileFormatVersion: 2
+guid: 4be63937eea65b4428271da1513324f6
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences:
+  - volumetric_smoke_compute_shader: {fileID: 7200000, guid: 1a25d92b377772b4a805cac4807825eb,
+      type: 3}
+  - worley_noise_texture: {instanceID: 0}
+  - detail_noise: {instanceID: 0}
+  - volume_shader_material: {fileID: 2100000, guid: e8a3e0b1d4edda0458d2476a4db5e342,
+      type: 2}
+  - light_map_3D: {instanceID: 0}
+  - white_noise: {instanceID: 0}
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
